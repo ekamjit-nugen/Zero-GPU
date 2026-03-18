@@ -20,31 +20,57 @@ ZeroGPU Forge automatically detects your hardware, quantizes models to fit your 
 
 ---
 
+## Prerequisites
+
+| Requirement | macOS | Ubuntu / Linux |
+|---|---|---|
+| OS | macOS 12+ (Monterey or later) | Ubuntu 20.04+ / Debian 11+ / any modern Linux |
+| CPU | Apple Silicon (M1/M2/M3/M4) recommended, Intel supported | Any x86_64 or ARM64 |
+| RAM | 8 GB minimum, 16 GB recommended | 8 GB minimum for 7B models |
+| GPU | Metal (automatic on Apple Silicon) | NVIDIA GPU optional (CUDA auto-detected) |
+| Tools | Xcode Command Line Tools (`xcode-select --install`) | `build-essential`, `cmake`, `git`, `curl`, `pkg-config`, `libssl-dev` |
+| Rust | Installed automatically by the install script, or manually via [rustup](https://rustup.rs) | Same |
+| Node.js | 20+ (only needed for the GUI app) | Same |
+
+---
+
 ## Quick Start
 
-### macOS (Apple Silicon or Intel)
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/yourusername/Zero_CPU.git
 cd Zero_CPU
+```
+
+### 2. Run the install script
+
+**macOS:**
+```bash
 bash scripts/install-mac.sh
 ```
 
-### Ubuntu / Linux
-
+**Ubuntu / Linux:**
 ```bash
-git clone https://github.com/yourusername/Zero_CPU.git
-cd Zero_CPU
 bash scripts/install-ubuntu.sh
 ```
 
-### Download a model
+The install script will:
+1. Build **llama.cpp** from source (with Metal on macOS ARM, optional CUDA on Linux)
+2. Place the compiled binaries into `src-tauri/binaries/`
+3. Install **Rust** if not already present
+4. Build the **zerogpu** CLI binary
+5. Add `zerogpu` to your `PATH`
+
+> **Note:** The `src-tauri/binaries/` directory is not included in the git repository. The install script builds these binaries from source for your specific platform and hardware. See [Building llama.cpp Binaries](#building-llamacpp-binaries) for manual instructions.
+
+### 3. Download a model
 
 ```bash
 bash scripts/download-model.sh
 ```
 
-### Optimize and chat
+### 4. Optimize and chat
 
 ```bash
 zerogpu --optimize ~/.zerogpu-forge/downloads/qwen2.5-coder-7b-instruct-q4_k_m.gguf
@@ -53,29 +79,109 @@ zerogpu --model qwen2.5
 
 ---
 
-## Installation — macOS
+## Building llama.cpp Binaries
 
-### Prerequisites
+The llama.cpp binaries (`llama-cli`, `llama-quantize`, `llama-bench`) are **not included in the repository** — they must be built from source for your platform. The install scripts handle this automatically, but you can also build them manually.
 
-- macOS 12+ (Monterey or later)
-- Apple Silicon (M1/M2/M3/M4) recommended, Intel supported
-- 8 GB RAM minimum, 16 GB recommended
-
-### Automated Install
+### macOS (Apple Silicon — with Metal)
 
 ```bash
-git clone https://github.com/yourusername/Zero_CPU.git
-cd Zero_CPU
-bash scripts/install-mac.sh
+# Install Xcode CLI tools if not present
+xcode-select --install
+
+# Clone and build llama.cpp
+git clone --depth 1 https://github.com/ggerganov/llama.cpp .llama-cpp-build
+cd .llama-cpp-build
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+# Copy binaries into the project
+mkdir -p ../src-tauri/binaries
+cp build/bin/llama-cli ../src-tauri/binaries/
+cp build/bin/llama-quantize ../src-tauri/binaries/
+cp build/bin/llama-bench ../src-tauri/binaries/
+find build -name "*.dylib" -exec cp {} ../src-tauri/binaries/ \;
+find build -name "*.metallib" -exec cp {} ../src-tauri/binaries/ \;
+cd ..
 ```
 
-This will:
-1. Check for pre-bundled llama.cpp binaries (included for macOS ARM)
-2. Install Rust if not present
-3. Build the `zerogpu` CLI binary
-4. Add `zerogpu` to your PATH
+### macOS (Intel — CPU only)
 
-### Manual Install
+```bash
+git clone --depth 1 https://github.com/ggerganov/llama.cpp .llama-cpp-build
+cd .llama-cpp-build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+mkdir -p ../src-tauri/binaries
+cp build/bin/llama-cli ../src-tauri/binaries/
+cp build/bin/llama-quantize ../src-tauri/binaries/
+cp build/bin/llama-bench ../src-tauri/binaries/
+find build -name "*.dylib" -exec cp {} ../src-tauri/binaries/ \;
+cd ..
+```
+
+### Ubuntu / Linux (CPU only)
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake git
+
+git clone --depth 1 https://github.com/ggerganov/llama.cpp .llama-cpp-build
+cd .llama-cpp-build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j$(nproc)
+
+mkdir -p ../src-tauri/binaries
+cp build/bin/llama-cli ../src-tauri/binaries/
+cp build/bin/llama-quantize ../src-tauri/binaries/
+cp build/bin/llama-bench ../src-tauri/binaries/
+find build -name "*.so" -exec cp {} ../src-tauri/binaries/ \;
+cd ..
+```
+
+### Ubuntu / Linux (with NVIDIA CUDA)
+
+```bash
+# Install NVIDIA drivers + CUDA toolkit if not present
+sudo apt install -y nvidia-driver-535 nvidia-cuda-toolkit
+
+# Verify GPU is visible
+nvidia-smi
+nvcc --version
+
+# Build llama.cpp with CUDA
+git clone --depth 1 https://github.com/ggerganov/llama.cpp .llama-cpp-build
+cd .llama-cpp-build
+cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j$(nproc)
+
+mkdir -p ../src-tauri/binaries
+cp build/bin/llama-cli ../src-tauri/binaries/
+cp build/bin/llama-quantize ../src-tauri/binaries/
+cp build/bin/llama-bench ../src-tauri/binaries/
+find build -name "*.so" -exec cp {} ../src-tauri/binaries/ \;
+cd ..
+```
+
+### Verify binaries
+
+After building, your `src-tauri/binaries/` directory should contain at minimum:
+
+```
+src-tauri/binaries/
+├── llama-cli          # Main inference binary
+├── llama-quantize     # Model quantization tool
+├── llama-bench        # Benchmarking tool (optional)
+├── *.dylib            # macOS shared libraries (Metal, BLAS, etc.)
+└── *.so               # Linux shared libraries (if applicable)
+```
+
+---
+
+## Manual Installation (without install script)
+
+### macOS
 
 ```bash
 # 1. Install Rust
@@ -86,61 +192,23 @@ source "$HOME/.cargo/env"
 git clone https://github.com/yourusername/Zero_CPU.git
 cd Zero_CPU
 
-# 3. Build CLI
+# 3. Build llama.cpp binaries (see section above)
+
+# 4. Build the ZeroGPU CLI
 cd src-tauri
 cargo build --bin zerogpu --release
 
-# 4. Add to PATH
+# 5. Add to PATH
 sudo ln -sf "$(pwd)/target/release/zerogpu" /usr/local/bin/zerogpu
 
-# 5. Verify
+# 6. Verify
 zerogpu --help
 ```
 
-### GUI App (optional)
+### Ubuntu / Linux
 
 ```bash
-# Install Node.js 20+ (via nvm)
-nvm install 20
-nvm use 20
-
-# Install dependencies and run
-cd Zero_CPU
-npm install
-npm run tauri dev      # development mode
-npm run tauri build    # production build (.dmg)
-```
-
----
-
-## Installation — Ubuntu / Linux
-
-### Prerequisites
-
-- Ubuntu 20.04+ / Debian 11+ / any modern Linux
-- 8 GB RAM minimum for 7B models
-- NVIDIA GPU optional (CUDA support auto-detected)
-
-### Automated Install
-
-```bash
-git clone https://github.com/yourusername/Zero_CPU.git
-cd Zero_CPU
-bash scripts/install-ubuntu.sh
-```
-
-This will:
-1. Install system dependencies (`build-essential`, `cmake`, `git`)
-2. Detect NVIDIA GPU and optionally build with CUDA
-3. Build llama.cpp from source (CPU or CUDA)
-4. Install Rust if not present
-5. Build the `zerogpu` CLI binary
-6. Add `zerogpu` to your PATH
-
-### Manual Install
-
-```bash
-# 1. Install dependencies
+# 1. Install system dependencies
 sudo apt update
 sudo apt install -y build-essential cmake git curl pkg-config libssl-dev
 
@@ -152,45 +220,31 @@ source "$HOME/.cargo/env"
 git clone https://github.com/yourusername/Zero_CPU.git
 cd Zero_CPU
 
-# 4. Build llama.cpp from source
-git clone --depth 1 https://github.com/ggerganov/llama.cpp .llama-cpp-build
-cd .llama-cpp-build
+# 4. Build llama.cpp binaries (see section above)
 
-# CPU only:
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-# OR with CUDA:
-cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
-
-cmake --build build --config Release -j$(nproc)
-
-# 5. Copy binaries
-cp build/bin/llama-cli ../src-tauri/binaries/
-cp build/bin/llama-quantize ../src-tauri/binaries/
-cd ..
-
-# 6. Build CLI
+# 5. Build the ZeroGPU CLI
 cd src-tauri
 cargo build --bin zerogpu --release
 
-# 7. Install
+# 6. Add to PATH
 sudo ln -sf "$(pwd)/target/release/zerogpu" /usr/local/bin/zerogpu
 
-# 8. Verify
+# 7. Verify
 zerogpu --help
 ```
 
-### With NVIDIA CUDA
+### GUI App (optional — macOS)
 
 ```bash
-# Install NVIDIA drivers + CUDA (if not already present)
-sudo apt install -y nvidia-driver-535 nvidia-cuda-toolkit
+# Install Node.js 20+ (via nvm)
+nvm install 20
+nvm use 20
 
-# Verify
-nvidia-smi
-nvcc --version
-
-# Then run the install script — it will auto-detect CUDA
-bash scripts/install-ubuntu.sh
+# Install dependencies and run
+cd Zero_CPU
+npm install
+npm run tauri dev      # development mode
+npm run tauri build    # production build (.dmg)
 ```
 
 ---
@@ -399,7 +453,7 @@ Zero_CPU/
 │   │   ├── license.rs            # License validation
 │   │   └── bin/
 │   │       └── zerogpu.rs        # CLI binary
-│   ├── binaries/                 # llama.cpp executables + libraries
+│   ├── binaries/                 # llama.cpp executables + libraries (not in git — built locally)
 │   └── Cargo.toml
 ├── scripts/
 │   ├── install-mac.sh            # macOS installer
@@ -428,12 +482,17 @@ source ~/.bashrc
 
 ### "Could not find llama-cli binary"
 
-Run from the project directory, or make sure binaries are at `src-tauri/binaries/llama-cli`.
+The llama.cpp binaries are not included in the git repository — they must be built for your platform. Run the install script to build them automatically:
 
-On Linux, you need to build llama.cpp first:
 ```bash
+# macOS
+bash scripts/install-mac.sh
+
+# Linux
 bash scripts/install-ubuntu.sh
 ```
+
+Or build manually — see [Building llama.cpp Binaries](#building-llamacpp-binaries). Verify the binaries exist at `src-tauri/binaries/llama-cli`.
 
 ### "quantized V cache was requested, but this requires Flash Attention"
 
