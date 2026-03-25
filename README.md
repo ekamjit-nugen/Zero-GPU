@@ -262,6 +262,9 @@ zerogpu --model <name> --ctx 32768          Chat with custom context size
 zerogpu --model <name> -sys "prompt"        Chat with system prompt
 zerogpu --model <name> -f prompt.txt        One-shot: read prompt from file
 zerogpu --model <name> -p "question"        One-shot: inline prompt
+zerogpu --serve                             Start OpenAI-compatible API server
+zerogpu --serve --port 3001                 API server on custom port
+zerogpu --serve --api-key "sk-xxx"          API server with auth
 zerogpu --delete <name|#>                   Delete a model
 zerogpu --delete-all                        Delete ALL models
 ```
@@ -336,6 +339,284 @@ npm run tauri dev
 ```bash
 npm run tauri build
 # Output: src-tauri/target/release/bundle/dmg/ZeroGPU Forge.dmg
+```
+
+---
+
+## API Server
+
+ZeroGPU Forge includes a built-in **OpenAI-compatible API server** that you can use to connect your Node.js (or any) backend to locally-running LLMs.
+
+### Start the server
+
+```bash
+# Default: port 8080, no auth
+zerogpu --serve
+
+# Custom port
+zerogpu --serve --port 3001
+
+# With API key authentication
+zerogpu --serve --port 3001 --api-key "my-secret-key"
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/chat/completions` | Chat completion (OpenAI-compatible) |
+| `GET` | `/v1/models` | List available models |
+| `GET` | `/health` | Health check |
+
+### API Examples
+
+**Chat completion:**
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Write a hello world in Python"}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 1024
+  }'
+```
+
+**Streaming:**
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5",
+    "messages": [{"role": "user", "content": "Explain recursion"}],
+    "stream": true
+  }'
+```
+
+**List models:**
+```bash
+curl http://localhost:8080/v1/models
+```
+
+**With API key:**
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret-key" \
+  -d '{"model": "qwen2.5", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+---
+
+## Connecting to Node.js Backend
+
+The API server is **OpenAI-compatible**, so you can use the official `openai` npm package or plain `fetch`.
+
+### Option 1: Using the OpenAI SDK (recommended)
+
+```bash
+npm install openai
+```
+
+```javascript
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: 'http://localhost:8080/v1',
+  apiKey: 'my-secret-key', // or any string if no auth
+});
+
+// Non-streaming
+async function chat(userMessage) {
+  const response = await client.chat.completions.create({
+    model: 'qwen2.5',      // must match a model name from `zerogpu --list`
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: userMessage },
+    ],
+    temperature: 0.7,
+    max_tokens: 1024,
+  });
+
+  return response.choices[0].message.content;
+}
+
+// Streaming
+async function chatStream(userMessage) {
+  const stream = await client.chat.completions.create({
+    model: 'qwen2.5',
+    messages: [{ role: 'user', content: userMessage }],
+    stream: true,
+  });
+
+  let fullResponse = '';
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content || '';
+    process.stdout.write(delta);
+    fullResponse += delta;
+  }
+  return fullResponse;
+}
+```
+
+### Option 2: Using fetch (no dependencies)
+
+```javascript
+async function chat(userMessage) {
+  const response = await fetch('http://localhost:8080/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer my-secret-key', // omit if no auth
+    },
+    body: JSON.stringify({
+      model: 'qwen2.5',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.7,
+      max_tokens: 1024,
+    }),
+  });
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+```
+
+### Option 3: Streaming with fetch (SSE)
+
+```javascript
+async function chatStream(userMessage, onToken) {
+  const response = await fetch('http://localhost:8080/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'qwen2.5',
+      messages: [{ role: 'user', content: userMessage }],
+      stream: true,
+    }),
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6);
+      if (data === '[DONE]') return;
+
+      const chunk = JSON.parse(data);
+      const token = chunk.choices[0]?.delta?.content;
+      if (token) onToken(token);
+    }
+  }
+}
+
+// Usage
+chatStream('Explain async/await', (token) => process.stdout.write(token));
+```
+
+### Express.js Integration Example
+
+```javascript
+import express from 'express';
+import OpenAI from 'openai';
+
+const app = express();
+app.use(express.json());
+
+const llm = new OpenAI({
+  baseURL: 'http://localhost:8080/v1',
+  apiKey: 'my-secret-key',
+});
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, history = [] } = req.body;
+
+    const response = await llm.chat.completions.create({
+      model: 'qwen2.5',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        ...history,
+        { role: 'user', content: message },
+      ],
+      temperature: 0.7,
+      max_tokens: 2048,
+    });
+
+    res.json({
+      reply: response.choices[0].message.content,
+      usage: response.usage,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Streaming endpoint
+app.post('/api/chat/stream', async (req, res) => {
+  const { message, history = [] } = req.body;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  try {
+    const stream = await llm.chat.completions.create({
+      model: 'qwen2.5',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        ...history,
+        { role: 'user', content: message },
+      ],
+      stream: true,
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        res.write(`data: ${JSON.stringify({ token: content })}\n\n`);
+      }
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (error) {
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+app.listen(3000, () => {
+  console.log('Backend running on http://localhost:3000');
+  console.log('Make sure zerogpu --serve is running on port 8080');
+});
+```
+
+### Quick Start: Backend + ZeroGPU
+
+```bash
+# Terminal 1: Start ZeroGPU API server
+zerogpu --serve --port 8080 --api-key "my-secret-key"
+
+# Terminal 2: Start your Node.js backend
+cd your-backend
+npm install openai express
+node server.js
 ```
 
 ---

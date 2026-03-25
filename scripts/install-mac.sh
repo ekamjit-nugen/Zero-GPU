@@ -70,6 +70,7 @@ else
     mkdir -p "$BINARIES_DIR"
     cp build/bin/llama-cli "$BINARIES_DIR/"
     cp build/bin/llama-quantize "$BINARIES_DIR/"
+    cp build/bin/llama-server "$BINARIES_DIR/" 2>/dev/null || true
     cp build/bin/llama-bench "$BINARIES_DIR/" 2>/dev/null || true
 
     # Copy Metal/dylib files
