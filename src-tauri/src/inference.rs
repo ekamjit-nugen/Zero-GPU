@@ -113,37 +113,36 @@ fn get_model_path(model_id: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// Extract clean response text from llama-cli conversation mode stdout.
+/// Extract clean response text from llama-cli stdout.
 ///
-/// llama-cli in --single-turn mode outputs:
-///   [banner/spinner/commands]\n> {prompt echo}\n\n{RESPONSE}\n\n[ Prompt: ...]\nExiting...
-///
-/// We want only {RESPONSE}.
+/// With --no-display-prompt, llama-cli outputs only the generated text
+/// followed by optional stats lines like `\n[...]` or `\nExiting...`.
+/// We strip those trailing artifacts.
 fn extract_response_text(full_output: &str) -> String {
-    // Find the prompt echo marker "> " at start of line
-    let after_prompt = if let Some(pos) = full_output.find("\n> ") {
-        // Skip past "> " line
-        let rest = &full_output[pos + 3..];
-        if let Some(nl) = rest.find('\n') {
-            rest[nl..].trim_start_matches('\n')
-        } else {
-            ""
+    let mut clean = full_output.to_string();
+
+    // Remove trailing stats line: "\n[ Prompt: ... ]" or "\n[end of text]"
+    if let Some(pos) = clean.rfind("\n[") {
+        // Only strip if it looks like a stats/info line (contains ']')
+        if clean[pos..].contains(']') {
+            clean.truncate(pos);
         }
-    } else {
-        // No prompt marker found — maybe output hasn't reached it yet
-        return String::new();
-    };
+    }
 
-    // Remove trailing stats line and "Exiting..."
-    let clean = if let Some(pos) = after_prompt.rfind("\n[") {
-        after_prompt[..pos].to_string()
-    } else if let Some(pos) = after_prompt.rfind("\nExiting") {
-        after_prompt[..pos].to_string()
-    } else {
-        after_prompt.to_string()
-    };
+    // Remove "Exiting..." line
+    if let Some(pos) = clean.rfind("\nExiting") {
+        clean.truncate(pos);
+    }
 
-    // Trim trailing whitespace/newlines
+    // Also handle the case where the prompt marker "> " appears
+    // (some llama-cli versions still echo it even with --no-display-prompt)
+    if let Some(pos) = clean.find("\n> ") {
+        let rest = &clean[pos + 3..];
+        if let Some(nl) = rest.find('\n') {
+            clean = rest[nl..].trim_start_matches('\n').to_string();
+        }
+    }
+
     clean.trim_end().to_string()
 }
 
@@ -175,6 +174,7 @@ pub fn run_chat(
         .arg("-p").arg(&full_prompt)
         .arg("--single-turn")
         .arg("--simple-io")          // cleaner IO for subprocess piping
+        .arg("--no-display-prompt")  // don't echo prompt — cleaner streaming
         .arg("-b").arg(config.batch_size.to_string())
         .arg("-ub").arg(config.ubatch_size.to_string())
         .arg("--cache-type-k").arg(&config.kv_cache_type_k)
@@ -232,13 +232,12 @@ pub fn run_chat(
         }
     });
 
-    // Read stdout and filter out llama-cli's conversation UI (banner, prompt echo, stats).
-    // We accumulate the full output and extract only the response portion,
-    // then emit deltas as streaming tokens.
+    // With --no-display-prompt, stdout contains only generated tokens.
+    // Stream chunks directly as they arrive — much more reliable across
+    // different llama-cli versions than trying to parse conversation UI.
     let mut reader = BufReader::new(stdout);
     let mut buf = [0u8; 128];
     let mut raw_output = String::new();
-    let mut last_emitted_len: usize = 0;
     let mut token_count: u32 = 0;
     let start_time = std::time::Instant::now();
 
@@ -246,33 +245,30 @@ pub fn run_chat(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]);
+                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
                 raw_output.push_str(&chunk);
 
-                // Extract the clean response text so far
-                let response = extract_response_text(&raw_output);
-
-                // Emit only the new delta since last emit
-                if response.len() > last_emitted_len {
-                    let delta = &response[last_emitted_len..];
-                    last_emitted_len = response.len();
-
-                    token_count += delta.split_whitespace().count() as u32;
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let current_tok_s = if elapsed > 0.5 {
-                        token_count as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-
-                    let _ = app.emit("chat-token", ChatToken {
-                        token: delta.to_string(),
-                        done: false,
-                        tok_s: current_tok_s,
-                        tokens_generated: token_count,
-                        prompt_tok_s: 0.0,
-                    });
+                // Skip known artifacts that may still appear
+                // (stats lines, exit messages)
+                if chunk.starts_with("\n[") || chunk.starts_with("Exiting") {
+                    continue;
                 }
+
+                token_count += chunk.split_whitespace().count() as u32;
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let current_tok_s = if elapsed > 0.5 {
+                    token_count as f64 / elapsed
+                } else {
+                    0.0
+                };
+
+                let _ = app.emit("chat-token", ChatToken {
+                    token: chunk,
+                    done: false,
+                    tok_s: current_tok_s,
+                    tokens_generated: token_count,
+                    prompt_tok_s: 0.0,
+                });
             }
             Err(_) => break,
         }
