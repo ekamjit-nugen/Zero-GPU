@@ -179,7 +179,14 @@ fn compute_params(model: &ModelMeta) -> InferenceParams {
     };
 
     // GPU layers: all layers if model fits, otherwise proportional
-    let gpu_layers = if is_apple {
+    let has_nvidia = std::process::Command::new("nvidia-smi")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let gpu_layers = if is_apple || has_nvidia {
         let model_size_mb = params_b * 0.55 * 1024.0;
         let available_mb = (total_ram - 4.0).max(1.0) * 1024.0;
         let total_layers = (params_b * 4.5) as u32;
@@ -655,7 +662,7 @@ fn optimize_model(gguf_path: &str) {
 // chat templates, and no banner/UI artifacts. We just launch it with
 // hardware-tuned parameters.
 
-fn start_api_server(port: u16, api_key: Option<String>, model_query: Option<String>) {
+fn start_api_server(port: u16, api_key: Option<String>, model_query: Option<String>, ctx_override: Option<u32>) {
     let bin_dir = match find_binaries_dir() {
         Some(d) => d,
         None => {
@@ -706,7 +713,10 @@ fn start_api_server(port: u16, api_key: Option<String>, model_query: Option<Stri
         std::process::exit(1);
     }
 
-    let params = compute_params(model);
+    let mut params = compute_params(model);
+    if let Some(ctx) = ctx_override {
+        params.ctx_size = ctx;
+    }
 
     eprintln!();
     eprintln!("  ┌─────────────────────────────────────────────────────────┐");
@@ -764,8 +774,8 @@ Always give the full, complete answer without truncating or summarizing.";
         .arg("-ub").arg(params.ubatch_size.to_string())
         .arg("--cache-type-k").arg(&params.kv_type_k)
         .arg("--cache-type-v").arg(&params.kv_type_v)
-        .arg("-fa").arg("on")  // flash attention
-        .arg("-np").arg("2");  // 2 parallel slots
+        .arg("--flash-attn").arg("on")  // flash attention
+        .arg("-np").arg("1");  // single slot to save memory
 
     if let Some(ref key) = api_key {
         cmd.arg("--api-key").arg(key);
@@ -931,7 +941,7 @@ fn main() {
 
     // Serve mode — launch llama-server with optimal params
     if serve_mode {
-        start_api_server(serve_port, serve_api_key, model_id.clone());
+        start_api_server(serve_port, serve_api_key, model_id.clone(), ctx_override);
         return;
     }
 
