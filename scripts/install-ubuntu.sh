@@ -42,7 +42,9 @@ echo ""
 # ── Install system dependencies ──────────────────────────────────────
 echo -e "${CYAN}  [1/5] Installing system dependencies...${NC}"
 sudo apt-get update -qq
-sudo apt-get install -y -qq build-essential cmake git pkg-config libssl-dev curl
+sudo apt-get install -y -qq build-essential cmake git pkg-config libssl-dev curl \
+    libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev libpango1.0-dev libatk1.0-dev libgdk-pixbuf-2.0-dev
 
 if $USE_CUDA; then
     if ! command -v nvcc &>/dev/null; then

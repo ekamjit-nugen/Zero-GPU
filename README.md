@@ -28,7 +28,7 @@ ZeroGPU Forge automatically detects your hardware, quantizes models to fit your 
 | CPU | Apple Silicon (M1/M2/M3/M4) recommended, Intel supported | Any x86_64 or ARM64 |
 | RAM | 8 GB minimum, 16 GB recommended | 8 GB minimum for 7B models |
 | GPU | Metal (automatic on Apple Silicon) | NVIDIA GPU optional (CUDA auto-detected) |
-| Tools | Xcode Command Line Tools (`xcode-select --install`) | `build-essential`, `cmake`, `git`, `curl`, `pkg-config`, `libssl-dev` |
+| Tools | Xcode Command Line Tools (`xcode-select --install`) | `build-essential`, `cmake`, `git`, `curl`, `pkg-config`, `libssl-dev`, `libglib2.0-dev`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libjavascriptcoregtk-4.1-dev`, `libsoup-3.0-dev` |
 | Rust | Installed automatically by the install script, or manually via [rustup](https://rustup.rs) | Same |
 | Node.js | 20+ (only needed for the GUI app) | Same |
 
@@ -210,7 +210,9 @@ zerogpu --help
 ```bash
 # 1. Install system dependencies
 sudo apt update
-sudo apt install -y build-essential cmake git curl pkg-config libssl-dev
+sudo apt install -y build-essential cmake git curl pkg-config libssl-dev \
+    libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev libpango1.0-dev libatk1.0-dev libgdk-pixbuf-2.0-dev
 
 # 2. Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -245,6 +247,89 @@ cd Zero_CPU
 npm install
 npm run tauri dev      # development mode
 npm run tauri build    # production build (.dmg)
+```
+
+---
+
+## Run on Ubuntu (Step-by-Step)
+
+### Step 1: Install system dependencies
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake git curl pkg-config libssl-dev \
+    libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev libpango1.0-dev libatk1.0-dev libgdk-pixbuf-2.0-dev
+```
+
+### Step 2: (Optional) Install NVIDIA CUDA for GPU acceleration
+
+Skip this step if you don't have an NVIDIA GPU.
+
+```bash
+# Install NVIDIA drivers + CUDA toolkit
+sudo apt install -y nvidia-driver-535 nvidia-cuda-toolkit
+
+# Verify GPU is visible
+nvidia-smi
+nvcc --version
+```
+
+### Step 3: Clone the repository
+
+```bash
+git clone https://github.com/yourusername/Zero_CPU.git
+cd Zero_CPU
+```
+
+### Step 4: Run the install script
+
+```bash
+bash scripts/install-ubuntu.sh
+```
+
+This will:
+1. Install system dependencies
+2. Install Rust (if not already installed)
+3. Build llama.cpp from source (auto-detects NVIDIA GPU for CUDA)
+4. Build the `zerogpu` CLI binary
+5. Add `zerogpu` to your PATH (`~/.local/bin`)
+
+After installation, reload your shell:
+
+```bash
+source ~/.bashrc
+```
+
+### Step 5: Download a model
+
+```bash
+bash scripts/download-model.sh
+```
+
+### Step 6: Optimize and run
+
+```bash
+# Optimize the model for your hardware
+zerogpu --optimize ~/.zerogpu-forge/downloads/qwen2.5-coder-7b-instruct-q4_k_m.gguf
+
+# Start chatting
+zerogpu --model qwen2.5
+```
+
+### Step 7: (Optional) Start the API server
+
+```bash
+zerogpu --serve --port 8080
+```
+
+### Quick reference
+
+```bash
+zerogpu --help              # Show all commands
+zerogpu --list              # List optimized models
+zerogpu --model qwen2.5 --ctx 32768 -f prompt.txt   # Long prompt from file
+zerogpu --serve --port 3001 --api-key "sk-xxx"       # API server with auth
 ```
 
 ---
